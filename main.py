@@ -1,8 +1,11 @@
 import argparse
+from datetime import datetime
 import random
 import re
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Sequence, Tuple
+from pathlib import Path
+import json
 
 import torch
 from tqdm import trange
@@ -31,8 +34,8 @@ class Condition:
     max_new_tokens: int = 12
 
 
-# Replicates the two conditions from the paper (Experiment 1).
 CONDITIONS: List[Condition] = [
+    # Replicates the Instruction Condition from the paper (Experiment 1).
     Condition(
         name="instruction",
         messages=lambda walk: [{"role": "user", "content": (
@@ -43,12 +46,14 @@ CONDITIONS: List[Condition] = [
         prefill=lambda walk: None,
         max_new_tokens=12,
     ),
+    # Replicates the Prefilled Condition from the paper (Experiment 1).
     Condition(
         name="prefilled",
         messages=lambda walk: [{"role": "user", "content": "Continue the sequence of words."}],
         prefill=lambda walk: f"[SEQUENCE] {' '.join(walk)}",
         max_new_tokens=4,
     ),
+    # Custom: Walk is embedded in previous assistant message.
     Condition(
         name="multi-turn",
         messages=lambda walk: [
@@ -59,6 +64,7 @@ CONDITIONS: List[Condition] = [
         prefill=lambda walk: None,
         max_new_tokens=12,
     ),
+    # Custom: Walk is embedded in previous assistant message, except the last word is given as example (1-shot learning).
     Condition(
         name="multi-turn-1-example",
         messages=lambda walk: [
@@ -71,6 +77,7 @@ CONDITIONS: List[Condition] = [
         prefill=lambda walk: None,
         max_new_tokens=12,
     ),
+    # Custom: Walk is embedded in previous assistant message, except the last two words are given as example (2-shot learning).
     Condition(
         name="multi-turn-2-examples",
         messages=lambda walk: [
@@ -85,6 +92,7 @@ CONDITIONS: List[Condition] = [
         prefill=lambda walk: None,
         max_new_tokens=12,
     ),
+    # Custom: Walk is embedded fully in the message history, where each assistant message contains one word from the walk.
     Condition(
         name="turn-by-turn",
         messages=lambda walk: [
@@ -278,6 +286,15 @@ def main() -> None:
             else:
                 print("(no failures)")
             print()
+
+    # save results to json file
+    Path("results").mkdir(exist_ok=True)
+    with open(Path("results") / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.json", "w") as f:
+        data = {
+            "args": vars(args),
+            "results": [vars(r) for r in results],
+        }
+        json.dump(data, f, indent=2)
 
 
 if __name__ == "__main__":
