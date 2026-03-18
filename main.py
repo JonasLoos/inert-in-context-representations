@@ -2,17 +2,11 @@ import argparse
 import random
 import re
 from dataclasses import dataclass
-from typing import Dict, List, Sequence, Tuple
+from typing import Callable, Dict, List, Sequence, Tuple
 
 import torch
+from tqdm import trange
 from transformers import AutoProcessor, Gemma3ForConditionalGeneration
-
-MODEL_ID = "google/gemma-3-4b-it"
-GRID_SIZE = 4
-WALK_LEN = 200
-DEFAULT_NUM_TRIALS = 20
-PAPER_NUM_TRIALS = 1000
-DEFAULT_SHOW_EXAMPLES = 5
 
 WORDS = [
     "toy", "ink", "city", "air",
@@ -25,7 +19,6 @@ WORD_SET = set(WORDS)
 ANSWER_RE = re.compile(r"^\s*(?:\[ANSWER\]\s*)?(?P<word>[A-Za-z]+)\b")
 
 # A message is {"role": "user"|"assistant"|"system", "content": str}.
-# Use {seq} anywhere in content or prefill as a placeholder for the word sequence.
 Message = Dict[str, str]
 
 
@@ -33,32 +26,77 @@ Message = Dict[str, str]
 class Condition:
     """A prompting setup defined by an arbitrary message history plus an optional prefill."""
     name: str
-    messages: List[Message]
-    prefill: str | None = None
+    messages: Callable[[List[str]], List[Message]]
+    prefill: Callable[[str], str|None] = lambda walk: None
     max_new_tokens: int = 12
-
-    def format(self, seq: str) -> Tuple[List[Message], str | None]:
-        msgs = [{"role": m["role"], "content": m["content"].format(seq=seq)} for m in self.messages]
-        prefill = self.prefill.format(seq=seq) if self.prefill is not None else None
-        return msgs, prefill
 
 
 # Replicates the two conditions from the paper (Experiment 1).
 CONDITIONS: List[Condition] = [
     Condition(
         name="instruction",
-        messages=[{"role": "user", "content": (
+        messages=lambda walk: [{"role": "user", "content": (
             "Your job is to predict the next word in a sequence of words. "
             "Generate the token [ANSWER], then generate the next word in the sequence.\n"
-            "[SEQUENCE] {seq}"
+            f"[SEQUENCE] {' '.join(walk)}"
         )}],
-        prefill=None,
+        prefill=lambda walk: None,
         max_new_tokens=12,
     ),
     Condition(
         name="prefilled",
-        messages=[{"role": "user", "content": "Continue the sequence of words."}],
-        prefill="[SEQUENCE] {seq}",
+        messages=lambda walk: [{"role": "user", "content": "Continue the sequence of words."}],
+        prefill=lambda walk: f"[SEQUENCE] {' '.join(walk)}",
+        max_new_tokens=4,
+    ),
+    Condition(
+        name="multi-turn",
+        messages=lambda walk: [
+            {"role": "user", "content": "Generate a sequence of words that follow a pattern."},
+            {"role": "assistant", "content": f"[SEQUENCE] {' '.join(walk)}"},
+            {"role": "user", "content": "Generate the next word in the sequence. Start with [ANSWER]."},
+        ],
+        prefill=lambda walk: None,
+        max_new_tokens=12,
+    ),
+    Condition(
+        name="multi-turn-1-example",
+        messages=lambda walk: [
+            {"role": "user", "content": "Generate a sequence of words that follow a pattern."},
+            {"role": "assistant", "content": f"[SEQUENCE] {' '.join(walk[:-1])}"},
+            {"role": "user", "content": "Generate the next word in the sequence. Start with [ANSWER]."},
+            {"role": "assistant", "content": f"[SEQUENCE] {walk[-1]}"},
+            {"role": "user", "content": "Generate the next word in the sequence. Start with [ANSWER]."},
+        ],
+        prefill=lambda walk: None,
+        max_new_tokens=12,
+    ),
+    Condition(
+        name="multi-turn-2-examples",
+        messages=lambda walk: [
+            {"role": "user", "content": "Generate a sequence of words that follow a pattern."},
+            {"role": "assistant", "content": f"[SEQUENCE] {' '.join(walk[:-2])}"},
+            {"role": "user", "content": "Generate the next word in the sequence. Start with [ANSWER]."},
+            {"role": "assistant", "content": f"[SEQUENCE] {walk[-2]}"},
+            {"role": "user", "content": "Generate the next word in the sequence. Start with [ANSWER]."},
+            {"role": "assistant", "content": f"[SEQUENCE] {walk[-1]}"},
+            {"role": "user", "content": "Generate the next word in the sequence. Start with [ANSWER]."},
+        ],
+        prefill=lambda walk: None,
+        max_new_tokens=12,
+    ),
+    Condition(
+        name="turn-by-turn",
+        messages=lambda walk: [
+            *[
+                x for w in walk for x in [
+                    {"role": "user", "content": "Give me a word."},
+                    {"role": "assistant", "content": w},
+                ]
+            ],
+            {"role": "user", "content": "Give me a word."},
+        ],
+        prefill=lambda walk: None,
         max_new_tokens=4,
     ),
 ]
@@ -84,14 +122,12 @@ def parse_args() -> argparse.Namespace:
         description="Evaluate prompting conditions on the delayed next-token prediction task from "
         "'Language Models Struggle to Use Representations Learned In-Context'."
     )
-    p.add_argument("--model-id", default=MODEL_ID)
-    p.add_argument("--grid-size", type=int, default=GRID_SIZE,
-                   help="Grid size (expects len(vocab) == grid_size^2).")
-    p.add_argument("--walk-len", type=int, default=WALK_LEN)
-    p.add_argument("--num-trials", type=int, default=DEFAULT_NUM_TRIALS,
-                   help=f"Word assignments to evaluate (paper uses {PAPER_NUM_TRIALS}).")
+    p.add_argument("--model-id", default="google/gemma-3-4b-it")
+    p.add_argument("--grid-size", type=int, default=4, help="Grid size (expects len(vocab) == grid_size^2).")
+    p.add_argument("--walk-len", type=int, default=200)
+    p.add_argument("--num-trials", type=int, default=50, help="Number of word assignments to evaluate.")  # paper uses 1000
     p.add_argument("--base-seed", type=int, default=0)
-    p.add_argument("--show-examples", type=int, default=DEFAULT_SHOW_EXAMPLES)
+    p.add_argument("--show-examples", type=int, default=5)
     p.add_argument("--quiet", action="store_true", help="Print only summary statistics.")
     return p.parse_args()
 
@@ -145,16 +181,24 @@ def evaluate_trial(
 
     last_word = walk[-1]
     valid_next = [pos2word[p] for p in neighbors(*word2pos[last_word], grid_size)]
-    seq = " ".join(walk)
 
     cond_results: Dict[str, ConditionResult] = {}
     for cond in conditions:
-        messages, prefill = cond.format(seq)
-        raw = run_generation(model, processor, messages, prefill=prefill, max_new_tokens=cond.max_new_tokens)
+        raw = run_generation(model, processor, cond.messages(walk), prefill=cond.prefill(walk), max_new_tokens=cond.max_new_tokens)
         guess = parse_answer(raw)
         cond_results[cond.name] = ConditionResult(raw=raw, guess=guess, ok=guess in valid_next)
 
     return TrialResult(seed=seed, last_word=last_word, valid_next_tokens=valid_next, conditions=cond_results)
+
+
+def print_table(rows: List[Dict[str, str]]) -> None:
+    cols = list(rows[0].keys())
+    widths = [max(len(str(c)), max(len(str(row[c])) for row in rows)) for c in cols]
+    header = "  ".join(str(c).ljust(w) for c, w in zip(cols, widths))
+    print(header)
+    print("-" * len(header))
+    for row in rows:
+        print("  ".join(str(row[c]).ljust(w) for c, w in zip(cols, widths)))
 
 
 def main() -> None:
@@ -181,49 +225,58 @@ def main() -> None:
             seed=s, words=WORDS, grid_size=args.grid_size, walk_len=args.walk_len,
             conditions=CONDITIONS,
         )
-        for s in range(args.base_seed, args.base_seed + args.num_trials)
+        for s in trange(args.base_seed, args.base_seed + args.num_trials, desc="Evaluating trials")
     ]
 
     n, vocab_size = len(results), len(WORDS)
     cond_names = [c.name for c in CONDITIONS]
-    summary: dict = {
-        "num_trials": n,
-        "uniform_vocab_chance_acc": sum(len(r.valid_next_tokens) / vocab_size for r in results) / n,
-        "avg_num_valid_next_tokens": sum(len(r.valid_next_tokens) for r in results) / n,
-    }
-    for name in cond_names:
-        summary[f"{name}_acc"] = sum(r.conditions[name].ok for r in results) / n
-        summary[f"{name}_parse_rate"] = sum(r.conditions[name].guess is not None for r in results) / n
 
     print("=== Configuration ===")
-    print({"model_id": args.model_id, "grid_size": args.grid_size, "walk_len": args.walk_len,
-           "num_trials": args.num_trials, "paper_num_trials": PAPER_NUM_TRIALS, "base_seed": args.base_seed,
-           "conditions": cond_names})
+    print(f"Model: {args.model_id}")
+    print(f"Grid size: {args.grid_size}")
+    print(f"Walk length: {args.walk_len}")
+    print(f"Number of trials: {args.num_trials}")
+    print(f"Base seed: {args.base_seed}")
+    print(f"Conditions: {cond_names}")
     print()
     print("=== Summary ===")
-    print(summary)
+    print(f"Number of trials: {n}")
+    print(f"Uniform vocab chance accuracy: {sum(len(r.valid_next_tokens) / vocab_size for r in results) / n:7.2%}")
+    print(f"Average number of valid next tokens: {sum(len(r.valid_next_tokens) for r in results) / n}")
+    print()
+    print_table([{
+        "condition": name,
+        "accuracy": f"{sum(r.conditions[name].ok for r in results) / n:7.2%}",
+        "parse rate": f"{sum(r.conditions[name].guess is not None for r in results) / n:7.2%}",
+    } for name in cond_names])
     print()
 
     if not args.quiet:
         print("=== Example trials ===")
+        ex_rows = []
         for r in results[:args.show_examples]:
             row = {"seed": r.seed, "last_word": r.last_word, "valid_next_tokens": r.valid_next_tokens}
             for name in cond_names:
                 cr = r.conditions[name]
-                row[f"{name}_guess"] = cr.guess
-                row[f"{name}_ok"] = cr.ok
-                row[f"{name}_raw"] = cr.raw
-            print(row)
+                row[f"{name}"] = ("✓" if cr.ok else "✗") + " " + cr.guess
+            ex_rows.append(row)
+        if ex_rows:
+            print_table(ex_rows)
         print()
 
         for name in cond_names:
             failures = [r for r in results if not r.conditions[name].ok]
             print(f"=== {name} failures ({len(failures)}/{n}) ===")
+            fail_rows = []
             for r in failures[:args.show_examples]:
                 cr = r.conditions[name]
-                print({"seed": r.seed, "last_word": r.last_word,
-                       "valid_next_tokens": r.valid_next_tokens,
-                       "guess": cr.guess, "raw": cr.raw})
+                fail_rows.append({"seed": r.seed, "last_word": r.last_word,
+                                  "valid_next_tokens": r.valid_next_tokens,
+                                  "guess": cr.guess, "raw answer": cr.raw.replace("\n", "\\n")})
+            if fail_rows:
+                print_table(fail_rows)
+            else:
+                print("(no failures)")
             print()
 
 
