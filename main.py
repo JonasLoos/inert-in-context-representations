@@ -1,6 +1,3 @@
-# pip install -U "torch>=2.4" "transformers>=4.51.3" accelerate sentencepiece
-
-import os
 import random
 import re
 from typing import Dict, List, Tuple
@@ -121,19 +118,13 @@ def run_chat(model, processor, user_text: str, prefill: str | None = None, max_n
 
 
 def main():
-    token = os.environ.get("HF_TOKEN")
-    if token is None:
-        print("Set HF_TOKEN in your environment after accepting the Gemma license on Hugging Face.")
-        return
-
     dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
     model = Gemma3ForConditionalGeneration.from_pretrained(
         MODEL_ID,
         torch_dtype=dtype,
         device_map="auto",
-        token=token,
     ).eval()
-    processor = AutoProcessor.from_pretrained(MODEL_ID, token=token)
+    processor = AutoProcessor.from_pretrained(MODEL_ID)
 
     pos2word, word2pos = make_grid(WORDS, GRID_SIZE)
     walk = random_walk(pos2word, GRID_SIZE, WALK_LEN)
