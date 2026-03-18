@@ -16,8 +16,14 @@ WORDS = [
     "wing", "cat", "jam", "zoo",
     "baby", "rock", "leaf", "ship",
     "lamp", "fork", "star", "bell",
+    "dog", "hat", "cup", "sun",
+    "box", "pen", "key", "bag",
+    "arm", "leg", "eye", "ear",
+    "bed", "car", "map", "egg",
+    "ice", "mud", "fox", "net",
+    "rod", "ant", "bee", "dew",
+    "oak", "nut",
 ]
-WORD_SET = set(WORDS)
 
 ANSWER_RE = re.compile(r"^\s*(?:\[ANSWER\]\s*)?(?P<word>[A-Za-z]+)\b")
 
@@ -131,7 +137,7 @@ def parse_args() -> argparse.Namespace:
         "'Language Models Struggle to Use Representations Learned In-Context'."
     )
     p.add_argument("--model-id", default="google/gemma-3-4b-it")
-    p.add_argument("--grid-size", type=int, default=4, help="Grid size (expects len(vocab) == grid_size^2).")
+    p.add_argument("--grid-size", type=str, default="4x4", help="Grid dimensions as RxC (e.g. 4x4, 5x5, 16x1).")
     p.add_argument("--walk-len", type=int, default=200)
     p.add_argument("--num-trials", type=int, default=50, help="Number of word assignments to evaluate.")  # paper uses 1000
     p.add_argument("--base-seed", type=int, default=0)
@@ -140,21 +146,21 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def neighbors(i: int, j: int, n: int) -> List[Tuple[int, int]]:
+def neighbors(i: int, j: int, rows: int, cols: int) -> List[Tuple[int, int]]:
     out = []
     if i > 0: out.append((i - 1, j))
-    if i < n - 1: out.append((i + 1, j))
+    if i < rows - 1: out.append((i + 1, j))
     if j > 0: out.append((i, j - 1))
-    if j < n - 1: out.append((i, j + 1))
+    if j < cols - 1: out.append((i, j + 1))
     return out
 
 
-def parse_answer(text: str) -> str | None:
+def parse_answer(text: str, words: Sequence[str]) -> str | None:
     m = ANSWER_RE.match(text)
     if m is None:
         return None
     word = m.group("word").lower()
-    return word if word in WORD_SET else None
+    return word if word in words else None
 
 
 def run_generation(
@@ -172,28 +178,27 @@ def run_generation(
 
 def evaluate_trial(
     model, processor,
-    *, seed: int, words: Sequence[str], grid_size: int, walk_len: int,
+    *, seed: int, words: Sequence[str], grid_rows: int, grid_cols: int, walk_len: int,
     conditions: List[Condition],
 ) -> TrialResult:
     rng = random.Random(seed)
-    shuffled = list(words)
-    rng.shuffle(shuffled)
-    pos2word = {(i, j): shuffled[i * grid_size + j] for i in range(grid_size) for j in range(grid_size)}
+    sampled = rng.sample(list(words), grid_rows * grid_cols)
+    pos2word = {(i, j): sampled[i * grid_cols + j] for i in range(grid_rows) for j in range(grid_cols)}
     word2pos = {w: p for p, w in pos2word.items()}
 
     pos = rng.choice(list(pos2word))
     walk = [pos2word[pos]]
     for _ in range(walk_len - 1):
-        pos = rng.choice(neighbors(pos[0], pos[1], grid_size))
+        pos = rng.choice(neighbors(pos[0], pos[1], grid_rows, grid_cols))
         walk.append(pos2word[pos])
 
     last_word = walk[-1]
-    valid_next = [pos2word[p] for p in neighbors(*word2pos[last_word], grid_size)]
+    valid_next = [pos2word[p] for p in neighbors(*word2pos[last_word], grid_rows, grid_cols)]
 
     cond_results: Dict[str, ConditionResult] = {}
     for cond in conditions:
         raw = run_generation(model, processor, cond.messages(walk), prefill=cond.prefill(walk), max_new_tokens=cond.max_new_tokens)
-        guess = parse_answer(raw)
+        guess = parse_answer(raw, sampled)
         cond_results[cond.name] = ConditionResult(raw=raw, guess=guess, ok=guess in valid_next)
 
     return TrialResult(seed=seed, last_word=last_word, valid_next_tokens=valid_next, conditions=cond_results)
@@ -220,8 +225,12 @@ def main() -> None:
     model.generation_config.top_k = None
     processor = AutoProcessor.from_pretrained(args.model_id, use_fast=False)
 
-    if len(WORDS) != args.grid_size ** 2:
-        raise ValueError(f"Expected {args.grid_size ** 2} words for {args.grid_size}x{args.grid_size} grid.")
+    parts = args.grid_size.split("x")
+    grid_rows, grid_cols = int(parts[0]), int(parts[1])
+    grid_cells = grid_rows * grid_cols
+
+    if len(WORDS) < grid_cells:
+        raise ValueError(f"Need at least {grid_cells} words for {grid_rows}x{grid_cols} grid, got {len(WORDS)}.")
     tokenizer = processor.tokenizer
     bad = [(w, ids) for w in WORDS if len(ids := tokenizer.encode(w, add_special_tokens=False)) != 1]
     if bad:
@@ -230,7 +239,7 @@ def main() -> None:
     results = [
         evaluate_trial(
             model, processor,
-            seed=s, words=WORDS, grid_size=args.grid_size, walk_len=args.walk_len,
+            seed=s, words=WORDS, grid_rows=grid_rows, grid_cols=grid_cols, walk_len=args.walk_len,
             conditions=CONDITIONS,
         )
         for s in trange(args.base_seed, args.base_seed + args.num_trials, desc="Evaluating trials")
@@ -241,7 +250,7 @@ def main() -> None:
 
     print("=== Configuration ===")
     print(f"Model: {args.model_id}")
-    print(f"Grid size: {args.grid_size}")
+    print(f"Grid size: {grid_rows}x{grid_cols}")
     print(f"Walk length: {args.walk_len}")
     print(f"Number of trials: {args.num_trials}")
     print(f"Base seed: {args.base_seed}")
