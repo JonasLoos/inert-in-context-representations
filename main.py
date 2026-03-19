@@ -25,7 +25,7 @@ WORDS = [
     "oak", "nut",
 ]
 
-ANSWER_RE = re.compile(r"^\s*(?:\[ANSWER\]\s*)?(?P<word>[A-Za-z]+)\b")
+ANSWER_RE = re.compile(r"^\s*(?:.*\[ANSWER\]\s*)?(?P<word>[A-Za-z]+)\b")
 
 # A message is {"role": "user"|"assistant"|"system", "content": str}.
 Message = Dict[str, str]
@@ -63,7 +63,7 @@ CONDITIONS: List[Condition] = [
     Condition(
         name="multi-turn",
         messages=lambda walk: [
-            {"role": "user", "content": "Generate a sequence of words that follow a pattern."},
+            {"role": "user", "content": "Generate a sequence of words that follow a pattern. Start with [SEQUENCE]."},
             {"role": "assistant", "content": f"[SEQUENCE] {' '.join(walk)}"},
             {"role": "user", "content": "Generate the next word in the sequence. Start with [ANSWER]."},
         ],
@@ -77,7 +77,7 @@ CONDITIONS: List[Condition] = [
             {"role": "user", "content": "Generate a sequence of words that follow a pattern."},
             {"role": "assistant", "content": f"[SEQUENCE] {' '.join(walk[:-1])}"},
             {"role": "user", "content": "Generate the next word in the sequence. Start with [ANSWER]."},
-            {"role": "assistant", "content": f"[SEQUENCE] {walk[-1]}"},
+            {"role": "assistant", "content": f"[ANSWER] {walk[-1]}"},
             {"role": "user", "content": "Generate the next word in the sequence. Start with [ANSWER]."},
         ],
         prefill=lambda walk: None,
@@ -90,9 +90,9 @@ CONDITIONS: List[Condition] = [
             {"role": "user", "content": "Generate a sequence of words that follow a pattern."},
             {"role": "assistant", "content": f"[SEQUENCE] {' '.join(walk[:-2])}"},
             {"role": "user", "content": "Generate the next word in the sequence. Start with [ANSWER]."},
-            {"role": "assistant", "content": f"[SEQUENCE] {walk[-2]}"},
+            {"role": "assistant", "content": f"[ANSWER] {walk[-2]}"},
             {"role": "user", "content": "Generate the next word in the sequence. Start with [ANSWER]."},
-            {"role": "assistant", "content": f"[SEQUENCE] {walk[-1]}"},
+            {"role": "assistant", "content": f"[ANSWER] {walk[-1]}"},
             {"role": "user", "content": "Generate the next word in the sequence. Start with [ANSWER]."},
         ],
         prefill=lambda walk: None,
@@ -120,10 +120,11 @@ CONDITIONS: List[Condition] = [
     Condition(
         name="instruction-answer-prefill",
         messages=lambda walk: [{"role": "user", "content": (
-            "Predict the next word in this sequence.\n"
+            "Your job is to predict the next word in a sequence of words. "
+            "Generate the token [ANSWER], then generate the next word in the sequence.\n"
             f"[SEQUENCE] {' '.join(walk)}"
         )}],
-        prefill=lambda walk: "[ANSWER]",
+        prefill=lambda walk: "[ANSWER] ",
         max_new_tokens=4,
     ),
     # Hypothesis: explicitly prompting CoT reasoning can help a non-reasoning model
@@ -144,7 +145,7 @@ CONDITIONS: List[Condition] = [
     # tests how fragile the prefill advantage is.
     Condition(
         name="prefill-with-separator",
-        messages=lambda walk: [{"role": "user", "content": "Continue the sequence of words."}],
+        messages=lambda walk: [{"role": "user", "content": "Output [SEQUENCE] followed by a sequence of words, then [ANSWER] and one more word that follows the pattern."}],
         prefill=lambda walk: f"[SEQUENCE] {' '.join(walk)}\n[ANSWER]",
         max_new_tokens=4,
     ),
@@ -156,10 +157,10 @@ CONDITIONS: List[Condition] = [
         messages=lambda walk: [
             {"role": "user", "content": (
                 f"Here is a sequence of words:\n[SEQUENCE] {' '.join(walk)}\n"
-                "What is the last word in the sequence? Start with [ANSWER]."
+                "What is the last word in the sequence? Answer in format `[ANSWER] <word>`."
             )},
             {"role": "assistant", "content": f"[ANSWER] {walk[-1]}"},
-            {"role": "user", "content": "Predict what word comes next in the sequence. Start with [ANSWER]."},
+            {"role": "user", "content": "Predict what word comes next in the sequence. Answer in format `[ANSWER] <word>`."},
         ],
         prefill=lambda walk: None,
         max_new_tokens=12,
