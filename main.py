@@ -392,7 +392,10 @@ def main() -> None:
     with open(Path("results") / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.json", "w") as f:
         data = {
             "args": vars(args),
-            "results": [vars(r) for r in results],
+            "results": [
+                {**vars(r), "conditions": {k: vars(v) for k, v in r.conditions.items()}}
+                for r in results
+            ],
         }
         json.dump(data, f, indent=2)
 
