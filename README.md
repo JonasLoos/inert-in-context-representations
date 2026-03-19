@@ -2,6 +2,7 @@
 
 A partial replication and slight extension of the paper [Language Models Struggle to Use Representations Learned In-Context](https://arxiv.org/abs/2602.04212) (Experiment 1) by Lepori et al. (Google DeepMind).
 
+Our findings support that models cannot always use the representations they learn in-context, but simple prompting changes can recover most of the lost performance.
 
 ## Setup
 
