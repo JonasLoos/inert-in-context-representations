@@ -25,7 +25,8 @@ WORDS = [
     "oak", "nut",
 ]
 
-ANSWER_RE = re.compile(r"^\s*(?:.*\[ANSWER\]\s*)?(?P<word>[A-Za-z]+)\b")
+ANSWER_TAG_RE = re.compile(r"\[ANSWER\]\s*(?P<word>[A-Za-z]+)")
+FIRST_WORD_RE = re.compile(r"(?P<word>[A-Za-z]+)")
 
 # A message is {"role": "user"|"assistant"|"system", "content": str}.
 Message = Dict[str, str]
@@ -113,20 +114,6 @@ CONDITIONS: List[Condition] = [
         prefill=lambda walk: None,
         max_new_tokens=4,
     ),
-    # Hypothesis: the instruction condition fails because of special tokens between
-    # the walk and the prediction, not because the representations are inert. Prefilling
-    # "[ANSWER]" in the assistant response eliminates most of the gap while keeping the
-    # walk in the user message.
-    Condition(
-        name="instruction-answer-prefill",
-        messages=lambda walk: [{"role": "user", "content": (
-            "Your job is to predict the next word in a sequence of words. "
-            "Generate the token [ANSWER], then generate the next word in the sequence.\n"
-            f"[SEQUENCE] {' '.join(walk)}"
-        )}],
-        prefill=lambda walk: "[ANSWER] ",
-        max_new_tokens=4,
-    ),
     # Hypothesis: explicitly prompting CoT reasoning can help a non-reasoning model
     # deploy otherwise-inert representations (paper shows reasoning models do better).
     Condition(
@@ -138,7 +125,7 @@ CONDITIONS: List[Condition] = [
             f"[SEQUENCE] {' '.join(walk)}"
         )}],
         prefill=lambda walk: None,
-        max_new_tokens=200,
+        max_new_tokens=420,
     ),
     # Hypothesis: the prefilled condition works because there is literally zero gap.
     # Inserting a brief natural-language separator in an otherwise-prefilled response
@@ -155,23 +142,23 @@ CONDITIONS: List[Condition] = [
     Condition(
         name="reflection",
         messages=lambda walk: [
-            {"role": "user", "content": (
-                f"Here is a sequence of words:\n[SEQUENCE] {' '.join(walk)}\n"
-                "What is the last word in the sequence? Answer in format `[ANSWER] <word>`."
-            )},
-            {"role": "assistant", "content": f"[ANSWER] {walk[-1]}"},
-            {"role": "user", "content": "Predict what word comes next in the sequence. Answer in format `[ANSWER] <word>`."},
+            {"role": "user", "content": f"You are given a sequence of words. Answer with ONLY 'Sequence acknowledged'. No explanation, no punctuation, no other text.\n[SEQUENCE] {' '.join(walk)}"},
+            {"role": "assistant", "content": f"Sequence acknowledged"},
+            {"role": "user", "content": f"Repeat the last word in the sequence. Answer with ONLY a single word. No explanation, no punctuation, no other text."},
+            {"role": "assistant", "content": walk[-1]},
+            {"role": "user", "content": f"Predict the next word in the sequence. Answer with ONLY a single word. No explanation, no punctuation, no other text."},
         ],
         prefill=lambda walk: None,
-        max_new_tokens=12,
+        max_new_tokens=4,
     ),
     # Hypothesis: presenting transitions as explicit pairs ("A -> B") rather than a flat
     # sequence makes the relational structure more salient and easier to deploy.
     Condition(
         name="pair-format",
         messages=lambda walk: [{"role": "user", "content": (
-            "Below are word-to-word transitions from a sequence. Predict what comes after the last word. "
-            "Write [ANSWER] then the word.\n"
+            "Below are word-to-word transitions from a sequence. "
+            "Your job is to predict the next word in a sequence of words. "
+            "Generate the token [ANSWER], then generate the next word in the sequence.\n"
             "[TRANSITIONS] " + ", ".join(f"{a} -> {b}" for a, b in zip(walk, walk[1:])) +
             f"\n[LAST WORD] {walk[-1]}"
         )}],
@@ -185,8 +172,8 @@ CONDITIONS: List[Condition] = [
         messages=lambda walk: [
             {"role": "system", "content": f"[SEQUENCE] {' '.join(walk)}"},
             {"role": "user", "content": (
-                "The system message contains a sequence of words that follow a pattern. "
-                "Predict the next word. Write [ANSWER] then the word."
+                "Your job is to predict the next word in a sequence of words given in the system message. "
+                "Generate the token [ANSWER], then generate the next word in the sequence.\n"
             )},
         ],
         prefill=lambda walk: None,
@@ -248,7 +235,7 @@ def neighbors(i: int, j: int, rows: int, cols: int) -> List[Tuple[int, int]]:
 
 
 def parse_answer(text: str, words: Sequence[str]) -> str | None:
-    m = ANSWER_RE.match(text)
+    m = ANSWER_TAG_RE.search(text) or FIRST_WORD_RE.search(text)
     if m is None:
         return None
     word = m.group("word").lower()
