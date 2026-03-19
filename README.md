@@ -32,6 +32,8 @@ The model is given a random **4×4 (or 16×1 linear) grid** of words drawn from 
 
 ## Results
 
+<img width="2386" height="811" alt="image" src="https://github.com/user-attachments/assets/5e2d93a4-426c-4a7d-86b4-aa2375ab427a" />
+
 ### Gemma-3-4B-IT
 
 | Condition | 4×4 accuracy | 4×4 parse rate | 16×1 accuracy | 16×1 parse rate |
@@ -81,7 +83,7 @@ The model is given a random **4×4 (or 16×1 linear) grid** of words drawn from 
 - **Model scale helps, but doesn't solve the core problem.** Gemma-3-27B shows clear gains on chain-of-thought (+39pp on 4×4) and reflection (+18pp), and reaches 100% on pair-format. But the instruction baseline only improves by ~2–14pp, confirming the inertness phenomenon persists at scale.
 - **Pair-format is trivial** (95–100%), suggesting that making relational transitions *explicit* (A → B) may allow the model to directly read of possible continuations instead of inferring graph structure.
 
-**Overall, while this confirms that models sometimes struggle to use representations learned in-context, this is not always the case and heavily depends on prompting/formatting.**
+***Overall, while this confirms that models sometimes struggle to use representations learned in-context, this is not always the case and heavily depends on prompting/formatting.***
 
 **Limitations**:
 - We don't test in-context representation quality, but only task performance.
