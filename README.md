@@ -11,6 +11,10 @@ The model is given a random **4×4 (or 16×1 linear) grid** of words drawn from 
 - 4×4 grid: ~19.75%
 - 16×1 linear: ~12.12%
 
+```sh
+pip install -r requirements.txt
+python main.py
+```
 
 
 ## Conditions

@@ -218,10 +218,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--model-id", default="google/gemma-3-4b-it")
     p.add_argument("--grid-size", type=str, default="4x4", help="Grid dimensions as RxC (e.g. 4x4, 5x5, 16x1).")
     p.add_argument("--walk-len", type=int, default=200)
-    p.add_argument("--num-trials", type=int, default=50, help="Number of word assignments to evaluate.")  # paper uses 1000
+    p.add_argument("--num-trials", type=int, default=100, help="Number of word assignments to evaluate.")
     p.add_argument("--base-seed", type=int, default=0)
     p.add_argument("--show-examples", type=int, default=5)
-    p.add_argument("--quiet", action="store_true", help="Print only summary statistics.")
     return p.parse_args()
 
 
@@ -347,33 +346,32 @@ def main() -> None:
     } for name in cond_names])
     print()
 
-    if not args.quiet:
-        print("=== Example trials ===")
-        ex_rows = []
-        for r in results[:args.show_examples]:
-            row = {"seed": r.seed, "last_word": r.last_word, "valid_next_tokens": r.valid_next_tokens}
-            for name in cond_names:
-                cr = r.conditions[name]
-                row[f"{name}"] = ("✓" if cr.ok else "✗") + " " + (cr.guess or "???")
-            ex_rows.append(row)
-        if ex_rows:
-            print_table(ex_rows)
-        print()
-
+    print("=== Example trials ===")
+    ex_rows = []
+    for r in results[:args.show_examples]:
+        row = {"seed": r.seed, "last_word": r.last_word, "valid_next_tokens": r.valid_next_tokens}
         for name in cond_names:
-            failures = [r for r in results if not r.conditions[name].ok]
-            print(f"=== {name} failures ({len(failures)}/{n}) ===")
-            fail_rows = []
-            for r in failures[:args.show_examples]:
-                cr = r.conditions[name]
-                fail_rows.append({"seed": r.seed, "last_word": r.last_word,
-                                  "valid_next_tokens": r.valid_next_tokens,
-                                  "guess": cr.guess, "raw answer": cr.raw.replace("\n", "\\n")})
-            if fail_rows:
-                print_table(fail_rows)
-            else:
-                print("(no failures)")
-            print()
+            cr = r.conditions[name]
+            row[f"{name}"] = ("✓" if cr.ok else "✗") + " " + (cr.guess or "???")
+        ex_rows.append(row)
+    if ex_rows:
+        print_table(ex_rows)
+    print()
+
+    for name in cond_names:
+        failures = [r for r in results if not r.conditions[name].ok]
+        print(f"=== {name} failures ({len(failures)}/{n}) ===")
+        fail_rows = []
+        for r in failures[:args.show_examples]:
+            cr = r.conditions[name]
+            fail_rows.append({"seed": r.seed, "last_word": r.last_word,
+                                "valid_next_tokens": r.valid_next_tokens,
+                                "guess": cr.guess, "raw answer": cr.raw.replace("\n", "\\n")})
+        if fail_rows:
+            print_table(fail_rows)
+        else:
+            print("(no failures)")
+        print()
 
     # save results to json file
     Path("results").mkdir(exist_ok=True)
