@@ -1,16 +1,17 @@
 # Do Language Models Struggle to Use Representations Learned In-Context?
 
-A partial replication and slight extension of the paper [Language Models Struggle to Use Representations Learned In-Context](https://arxiv.org/abs/2602.04212) by Lepori et al. (Google DeepMind).
+A partial replication and slight extension of the paper [Language Models Struggle to Use Representations Learned In-Context](https://arxiv.org/abs/2602.04212) (Experiment 1) by Lepori et al. (Google DeepMind).
+
 
 ## Setup
 
-The model is given a random **4×4 (or 16×1 linear) grid** of words drawn from a 42-word single-token vocabulary. A random walk of 200 steps is performed on the grid and the model sees the full walk sequence. It is then asked to predict the **next word** given the last word. We test 12 different prompting strategies and measure whether the model correctly names a valid neighbor.
+The model is given a random **4×4 (or 16×1 linear) grid** of words drawn from a 42-word single-token vocabulary. A random walk of 200 steps is performed on the grid and the model sees the full walk sequence. It is then asked to predict the **next word** given the last word. We test 12 different prompting strategies with 100 trials each and measure whether the model correctly names a valid neighbor.
 
 **Chance baseline** (guessing uniformly from the full vocabulary):
 - 4×4 grid: ~19.75%
 - 16×1 linear: ~12.12%
 
-Each experiment: 100 trials, seeds 0–99.
+
 
 ## Conditions
 
@@ -18,16 +19,16 @@ Each experiment: 100 trials, seeds 0–99.
 |---|---|
 | `instruction` *(paper)* | Walk shown in system prompt, model asked for next word |
 | `prefilled` *(paper)* | Response prefilled with the walk sequence |
-| `multi-turn` | Walk presented as a conversation history |
-| `multi-turn-1-example` | 1-shot in-context example then multi-turn |
-| `multi-turn-2-examples` | 2-shot in-context examples then multi-turn |
-| `turn-by-turn` | Each walk step presented in a separate turn |
-| `chain-of-thought` | Model asked to reason step-by-step |
-| `prefill-with-separator` | Prefilled with separator tokens |
-| `reflection` | Model reflects on the sequence structure first |
-| `pair-format` | Walk presented as explicit transitions (A → B) |
-| `system-message` | Walk placed in system message |
-| `partial-prefill` | Half user message, half prefilled |
+| `multi-turn` *(new)* | Walk presented as a conversation history |
+| `multi-turn-1-example` *(new)* | 1-shot in-context example then multi-turn |
+| `multi-turn-2-examples` *(new)* | 2-shot in-context examples then multi-turn |
+| `turn-by-turn` *(new)* | Each walk step presented in a separate turn |
+| `chain-of-thought` *(new)* | Model asked to reason step-by-step |
+| `prefill-with-separator` *(new)* | Prefilled with separator tokens |
+| `reflection` *(new)* | Model reflects on the sequence structure first |
+| `pair-format` *(new)* | Walk presented as explicit transitions (A → B) |
+| `system-message` *(new)* | Walk placed in system message |
+| `partial-prefill` *(new)* | Half user message, half prefilled |
 
 ## Results
 
@@ -68,12 +69,21 @@ Each experiment: 100 trials, seeds 0–99.
 | *Chance baseline* | *19.75%* | — | *12.12%* | — |
 
 
-## Key Findings / Interpretation
+## Key Findings
+
+... and ideas what these results may mean:
 
 - **The instruction baseline is consistently weak** (26–57%), well below many other conditions, replicating the paper's finding that in-context learned representations remain largely "inert" when the model simply follows an instruction.
-- **Prefilling and partial-prefill are very strong** (87–99%). When the next word predition task resembles the pre-training next-token prediction setting, performance is high.
+- **Prefilling and partial-prefill are very strong** (87–99%), replicating the paper's finding. When the next word prediction task resembles the pre-training next-token prediction setting, performance is high.
 - **Multi-turn (bare) performs poorly** (25–42%), often worse than the instruction baseline. Distributing the walk across turns without explicit examples provides no benefit.
+- **Few-shot examples help dramatically** (multi-turn +1 example: 83–95%, vs bare multi-turn: 25–42%). A single in-context example showing how to answer is enough to unlock most of the available performance. Adding a second example yields inconsistent gains and can even hurt.
+- **Turn-by-turn format works well** (75–95%), especially on the linear grid. It frames the task as the model actively predicting each step, which makes the final prediction a natural continuation.
 - **Model scale helps, but doesn't solve the core problem.** Gemma-3-27B shows clear gains on chain-of-thought (+39pp on 4×4) and reflection (+18pp), and reaches 100% on pair-format. But the instruction baseline only improves by ~2–14pp, confirming the inertness phenomenon persists at scale.
-- **prefill-with-separator hurts on 27B** (17% on 4×4), suggesting the separator tokens disrupt the model's ability to track the walk in the prefill regime.
-- **Linear grids (16×1) are slightly easier** for most conditions despite having a larger vocabulary, because each word has fewer valid successors (avg 1.94 vs 3.16), reducing the effective branching factor.
-- **Pair-format is trivial** (95–100%), suggesting that making relational transitions *explicit* (A → B) allows the model to directly read off structure rather than inferring it from the walk sequence.
+- **Pair-format is trivial** (95–100%), suggesting that making relational transitions *explicit* (A → B) may allow the model to directly read of possible continuations instead of inferring graph structure.
+
+**Overall, while this confirms that models sometimes struggle to use representations learned in-context, this is not always the case and heavily depends on prompting/formatting.**
+
+**Limitations**:
+- We don't test in-context representation quality, but only task performance.
+- We only evaluate two models from the same family on 100 trials per condition and a walk length of 200, which may not transfer to other settings.
+- We don't further investigate why the models do better or worse on some tasks, the interpretations are just ideas.
