@@ -337,7 +337,7 @@ def main() -> None:
         for s in trange(args.base_seed, args.base_seed + args.num_trials, desc="Evaluating trials")
     ]
 
-    n, vocab_size = len(results), len(WORDS)
+    n = len(results)
     cond_names = [c.name for c in CONDITIONS]
 
     print("=== Configuration ===")
@@ -350,7 +350,7 @@ def main() -> None:
     print()
     print("=== Summary ===")
     print(f"Number of trials: {n}")
-    print(f"Uniform vocab chance accuracy: {sum(len(r.valid_next_tokens) / vocab_size for r in results) / n:7.2%}")
+    print(f"Uniform vocab chance accuracy: {sum(len(r.valid_next_tokens) / grid_cells for r in results) / n:7.2%}")
     print(f"Average number of valid next tokens: {sum(len(r.valid_next_tokens) for r in results) / n}")
     print()
     print_table([{
