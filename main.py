@@ -145,7 +145,7 @@ CONDITIONS: List[Condition] = [
     Condition(
         name="prefill-with-separator",
         messages=lambda walk: [{"role": "user", "content": "Continue the sequence of words."}],
-        prefill=lambda walk: f"[SEQUENCE] {' '.join(walk)}\nThe next word in the sequence is:",
+        prefill=lambda walk: f"[SEQUENCE] {' '.join(walk)}\n[ANSWER]",
         max_new_tokens=4,
     ),
     # Hypothesis: having the model "engage" with the walk before predicting — even in a
@@ -366,7 +366,7 @@ def main() -> None:
             row = {"seed": r.seed, "last_word": r.last_word, "valid_next_tokens": r.valid_next_tokens}
             for name in cond_names:
                 cr = r.conditions[name]
-                row[f"{name}"] = ("✓" if cr.ok else "✗") + " " + cr.guess
+                row[f"{name}"] = ("✓" if cr.ok else "✗") + " " + (cr.guess or "???")
             ex_rows.append(row)
         if ex_rows:
             print_table(ex_rows)
