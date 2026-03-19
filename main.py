@@ -113,6 +113,97 @@ CONDITIONS: List[Condition] = [
         prefill=lambda walk: None,
         max_new_tokens=4,
     ),
+    # Hypothesis: the instruction condition fails because of special tokens between
+    # the walk and the prediction, not because the representations are inert. Prefilling
+    # "[ANSWER]" in the assistant response eliminates most of the gap while keeping the
+    # walk in the user message.
+    Condition(
+        name="instruction-answer-prefill",
+        messages=lambda walk: [{"role": "user", "content": (
+            "Predict the next word in this sequence.\n"
+            f"[SEQUENCE] {' '.join(walk)}"
+        )}],
+        prefill=lambda walk: "[ANSWER]",
+        max_new_tokens=4,
+    ),
+    # Hypothesis: explicitly prompting CoT reasoning can help a non-reasoning model
+    # deploy otherwise-inert representations (paper shows reasoning models do better).
+    Condition(
+        name="chain-of-thought",
+        messages=lambda walk: [{"role": "user", "content": (
+            "Your job is to predict the next word in a sequence of words. "
+            "First, think step by step about what pattern connects consecutive words in the sequence. "
+            "Then, on a new line, write [ANSWER] followed by the next word.\n"
+            f"[SEQUENCE] {' '.join(walk)}"
+        )}],
+        prefill=lambda walk: None,
+        max_new_tokens=200,
+    ),
+    # Hypothesis: the prefilled condition works because there is literally zero gap.
+    # Inserting a brief natural-language separator in an otherwise-prefilled response
+    # tests how fragile the prefill advantage is.
+    Condition(
+        name="prefill-with-separator",
+        messages=lambda walk: [{"role": "user", "content": "Continue the sequence of words."}],
+        prefill=lambda walk: f"[SEQUENCE] {' '.join(walk)}\nThe next word in the sequence is:",
+        max_new_tokens=4,
+    ),
+    # Hypothesis: having the model "engage" with the walk before predicting — even in a
+    # trivial way — warms up the representation for deployment. The assistant confirms
+    # the last word (demonstrating awareness of the walk), then is asked to predict.
+    Condition(
+        name="reflection",
+        messages=lambda walk: [
+            {"role": "user", "content": (
+                f"Here is a sequence of words:\n[SEQUENCE] {' '.join(walk)}\n"
+                "What is the last word in the sequence? Start with [ANSWER]."
+            )},
+            {"role": "assistant", "content": f"[ANSWER] {walk[-1]}"},
+            {"role": "user", "content": "Predict what word comes next in the sequence. Start with [ANSWER]."},
+        ],
+        prefill=lambda walk: None,
+        max_new_tokens=12,
+    ),
+    # Hypothesis: presenting transitions as explicit pairs ("A -> B") rather than a flat
+    # sequence makes the relational structure more salient and easier to deploy.
+    Condition(
+        name="pair-format",
+        messages=lambda walk: [{"role": "user", "content": (
+            "Below are word-to-word transitions from a sequence. Predict what comes after the last word. "
+            "Write [ANSWER] then the word.\n"
+            "[TRANSITIONS] " + ", ".join(f"{a} -> {b}" for a, b in zip(walk, walk[1:])) +
+            f"\n[LAST WORD] {walk[-1]}"
+        )}],
+        prefill=lambda walk: None,
+        max_new_tokens=12,
+    ),
+    # Hypothesis: placing the walk in the system message (a privileged context slot that
+    # models are trained to attend to) may improve deployment over the user message.
+    Condition(
+        name="system-message",
+        messages=lambda walk: [
+            {"role": "system", "content": f"[SEQUENCE] {' '.join(walk)}"},
+            {"role": "user", "content": (
+                "The system message contains a sequence of words that follow a pattern. "
+                "Predict the next word. Write [ANSWER] then the word."
+            )},
+        ],
+        prefill=lambda walk: None,
+        max_new_tokens=12,
+    ),
+    # Hypothesis: if the prefill condition works because tokens are in the model's own
+    # output space, then splitting the walk — first half in the user message, second half
+    # prefilled — should still enable deployment, since the representation is built
+    # incrementally and the critical final tokens are in assistant space.
+    Condition(
+        name="partial-prefill",
+        messages=lambda walk: [{"role": "user", "content": (
+            "Continue this sequence of words.\n"
+            f"[SEQUENCE] {' '.join(walk[:len(walk)//2])}"
+        )}],
+        prefill=lambda walk: " ".join(walk[len(walk)//2:]),
+        max_new_tokens=4,
+    ),
 ]
 
 
