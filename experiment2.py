@@ -7,14 +7,21 @@ Replicates Experiment 2 from "Language Models Struggle to Use Representations Le
 The model must apply the rule to a held-out query state, which requires deploying the
 in-context topology it inferred from the walk.
 
-We also implement the explicit-topology baseline from Section 4, where the grid structure
-is described verbatim (as "Coordinates: i j Item: word") instead of via the random walk.
+We test two conditions:
+  - awm:      Sequence in a prior assistant turn, examples+query in the next user turn.
+              The model must use the topology it "generated" to answer the AWM question.
+  - explicit: Grid coordinates given explicitly in the user message instead of the walk.
+              This tests whether the model can apply the rule when given perfect topology info.
+
+The paper uses a fully-prefilled format; we use multi-turn here because Gemma refuses to
+generate after a multi-section prefill. The paper's footnote (§4) confirms that instruction
+format yields the same (poor) performance on AWM.
 """
 
 import argparse
 from datetime import datetime
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 import json
@@ -56,74 +63,91 @@ RULES: List[Rule] = [
     ),
 ]
 
-# How many few-shot examples to include per rule/topology combination.
-# The paper uses 10 for most cases, but only 6 for 4x4 grid + 2-step-down
-# (since only 8 valid input states exist and some are held out as queries).
+# Default number of few-shot examples per trial (paper uses 10, or 6 when pairs are scarce).
 DEFAULT_NUM_EXAMPLES = 10
 
 
 def get_num_examples(rule: Rule, grid_rows: int, grid_cols: int) -> int:
-    """Return the number of few-shot examples for a given rule/topology."""
-    valid_inputs = [
-        (i, j)
+    """Return the number of few-shot examples for a given rule/topology.
+
+    Mirrors the paper: 10 for most settings, fewer when the rule has limited valid inputs
+    (e.g. 4x4 grid + 2-step-down has only 8 valid pairs, so the paper uses 6).
+    """
+    valid_count = sum(
+        1
         for i in range(grid_rows) for j in range(grid_cols)
         if rule.apply(i, j, grid_rows, grid_cols) is not None
-    ]
-    # Reserve at least 1 for the query; leave a small buffer.
-    return min(DEFAULT_NUM_EXAMPLES, len(valid_inputs) - 2)
+    )
+    # Reserve at least 2 for held-out queries across trials; cap at default.
+    return min(DEFAULT_NUM_EXAMPLES, valid_count - 2)
 
 
 # ---------------------------------------------------------------------------
 # Prompt builders
 # ---------------------------------------------------------------------------
 
-def _format_examples(examples: List[Tuple[str, str]]) -> str:
-    lines = "\n".join(f"Input: {inp} Output: {out}" for inp, out in examples)
-    return f"[EXAMPLES]\n{lines}"
+def _examples_text(examples: List[Tuple[str, str]]) -> str:
+    return "\n".join(f"Input: {inp} Output: {out}" for inp, out in examples)
 
 
-def build_awm_prefill(
+def _coord_text(pos2word: Dict[Tuple[int, int], str], grid_rows: int, grid_cols: int) -> str:
+    return "\n".join(
+        f"Coordinates: {i} {j} Item: {pos2word[(i, j)]}"
+        for i in range(grid_rows) for j in range(grid_cols)
+    )
+
+
+def build_awm_messages(
     walk: List[str],
     examples: List[Tuple[str, str]],
     query_input: str,
-) -> str:
-    """Prefill for the AWM condition: walk + few-shot examples + query."""
-    seq = f"[SEQUENCE] {' '.join(walk)}"
-    ex = _format_examples(examples)
-    return f"{seq}\n\n{ex}\n\n[QUERY]\nInput: {query_input} Output:"
+) -> Tuple[List[Message], None]:
+    """Multi-turn AWM prompt.
+
+    The walk is placed in a completed assistant turn so the model treats it as its own
+    output (mirroring experiment1's multi-turn conditions). The examples and query are
+    then posed in the next user turn, requiring the model to deploy the topology it
+    "generated" to answer correctly.
+    """
+    messages: List[Message] = [
+        {"role": "user", "content": "Generate a sequence of words that follow a pattern. Start with [SEQUENCE]."},
+        {"role": "assistant", "content": f"[SEQUENCE] {' '.join(walk)}"},
+        {"role": "user", "content": (
+            "You are given examples of a mapping rule applied to the sequence above. "
+            "Predict the output word for the query by inferring the rule from the examples. "
+            "Generate the token [ANSWER], then generate the output word.\n\n"
+            f"[EXAMPLES]\n{_examples_text(examples)}\n\n"
+            f"[QUERY]\nInput: {query_input}"
+        )},
+    ]
+    return messages, None  # no prefill
 
 
-def build_explicit_prefill(
+def build_explicit_messages(
     pos2word: Dict[Tuple[int, int], str],
     grid_rows: int,
     grid_cols: int,
     examples: List[Tuple[str, str]],
     query_input: str,
-) -> str:
-    """Prefill for the explicit-topology baseline: coordinate list + few-shot examples + query."""
-    coord_lines = "\n".join(
-        f"Coordinates: {i} {j} Item: {pos2word[(i, j)]}"
-        for i in range(grid_rows) for j in range(grid_cols)
-    )
-    topo = f"[TOPOLOGY]\n{coord_lines}"
-    ex = _format_examples(examples)
-    return f"{topo}\n\n{ex}\n\n[QUERY]\nInput: {query_input} Output:"
+) -> Tuple[List[Message], None]:
+    """Explicit-topology baseline prompt.
 
-
-AWM_USER_MESSAGE = (
-    "You are given a sequence of words and few-shot examples of a mapping rule. "
-    "Each example shows an input word and the output word it maps to under the rule. "
-    "Predict the output word for the query input. "
-    "Respond with a single word only."
-)
-
-EXPLICIT_USER_MESSAGE = (
-    "You are given a description of a grid where each cell has coordinates and a word, "
-    "followed by few-shot examples of a mapping rule. "
-    "Each example shows an input word and the output word it maps to under the rule. "
-    "Predict the output word for the query input. "
-    "Respond with a single word only."
-)
+    The grid structure is described verbatim (as "Coordinates: i j Item: word") so the
+    model has perfect knowledge of the topology. Tests whether failures on the AWM condition
+    stem from an inability to learn the rule or from inert in-context representations.
+    """
+    messages: List[Message] = [
+        {"role": "user", "content": (
+            "You are given a description of a grid where each cell has coordinates and a word, "
+            "followed by examples of a mapping rule. "
+            "Predict the output word for the query. "
+            "Generate the token [ANSWER], then generate the output word.\n\n"
+            f"[TOPOLOGY]\n{_coord_text(pos2word, grid_rows, grid_cols)}\n\n"
+            f"[EXAMPLES]\n{_examples_text(examples)}\n\n"
+            f"[QUERY]\nInput: {query_input}"
+        )},
+    ]
+    return messages, None
 
 
 # ---------------------------------------------------------------------------
@@ -164,14 +188,10 @@ def evaluate_awm_trial(
     num_examples: int,
     run_explicit: bool,
 ) -> List[AWMTrialResult]:
-    """
-    Run one trial (one word assignment) for both AWM and (optionally) explicit-topology conditions.
-    Returns a list of AWMTrialResult, one per condition run.
-    """
+    """Run one trial for both AWM and (optionally) explicit-topology conditions."""
     rng = random.Random(seed)
     sampled = rng.sample(list(words), grid_rows * grid_cols)
     pos2word = {(i, j): sampled[i * grid_cols + j] for i in range(grid_rows) for j in range(grid_cols)}
-    word2pos = {w: p for p, w in pos2word.items()}
 
     # Build random walk.
     pos = rng.choice(list(pos2word))
@@ -181,11 +201,11 @@ def evaluate_awm_trial(
         walk.append(pos2word[pos])
 
     # Collect all valid (input_word, output_word) pairs for this rule.
-    valid_pairs: List[Tuple[str, str]] = []
-    for (i, j), inp_word in pos2word.items():
-        target = rule.apply(i, j, grid_rows, grid_cols)
-        if target is not None:
-            valid_pairs.append((inp_word, pos2word[target]))
+    valid_pairs: List[Tuple[str, str]] = [
+        (pos2word[(i, j)], pos2word[rule.apply(i, j, grid_rows, grid_cols)])
+        for i in range(grid_rows) for j in range(grid_cols)
+        if rule.apply(i, j, grid_rows, grid_cols) is not None
+    ]
 
     if len(valid_pairs) < num_examples + 1:
         raise ValueError(
@@ -193,43 +213,37 @@ def evaluate_awm_trial(
             f"on {grid_rows}x{grid_cols} grid with {num_examples} examples + 1 query."
         )
 
-    # Sample examples and a held-out query.
+    # Sample examples and a held-out query (reproducible per seed).
     rng.shuffle(valid_pairs)
     example_pairs = valid_pairs[:num_examples]
     query_input, expected_output = valid_pairs[num_examples]
 
-    results = []
+    output: List[AWMTrialResult] = []
 
-    # --- AWM condition (walk as prefill) ---
-    awm_prefill = build_awm_prefill(walk, example_pairs, query_input)
-    awm_messages: List[Message] = [{"role": "user", "content": AWM_USER_MESSAGE}]
-    raw = run_generation(model, processor, awm_messages, prefill=awm_prefill, max_new_tokens=4)
+    # --- AWM condition ---
+    awm_messages, awm_prefill = build_awm_messages(walk, example_pairs, query_input)
+    raw = run_generation(model, processor, awm_messages, prefill=awm_prefill, max_new_tokens=12)
     guess = parse_answer(raw, sampled)
-    results.append(AWMTrialResult(
-        seed=seed,
-        rule=rule.name,
-        condition="awm",
-        query_input=query_input,
-        expected_output=expected_output,
+    output.append(AWMTrialResult(
+        seed=seed, rule=rule.name, condition="awm",
+        query_input=query_input, expected_output=expected_output,
         result=AWMConditionResult(raw=raw, guess=guess, expected=expected_output, ok=guess == expected_output),
     ))
 
     # --- Explicit topology condition ---
     if run_explicit:
-        exp_prefill = build_explicit_prefill(pos2word, grid_rows, grid_cols, example_pairs, query_input)
-        exp_messages: List[Message] = [{"role": "user", "content": EXPLICIT_USER_MESSAGE}]
-        raw = run_generation(model, processor, exp_messages, prefill=exp_prefill, max_new_tokens=4)
+        exp_messages, exp_prefill = build_explicit_messages(
+            pos2word, grid_rows, grid_cols, example_pairs, query_input
+        )
+        raw = run_generation(model, processor, exp_messages, prefill=exp_prefill, max_new_tokens=12)
         guess = parse_answer(raw, sampled)
-        results.append(AWMTrialResult(
-            seed=seed,
-            rule=rule.name,
-            condition="explicit",
-            query_input=query_input,
-            expected_output=expected_output,
+        output.append(AWMTrialResult(
+            seed=seed, rule=rule.name, condition="explicit",
+            query_input=query_input, expected_output=expected_output,
             result=AWMConditionResult(raw=raw, guess=guess, expected=expected_output, ok=guess == expected_output),
         ))
 
-    return results
+    return output
 
 
 # ---------------------------------------------------------------------------
@@ -245,8 +259,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--grid-size", type=str, default="4x4", help="Grid dimensions as RxC (e.g. 4x4, 5x5, 16x1).")
     p.add_argument("--walk-len", type=int, default=200)
     p.add_argument("--rules", nargs="+", default=["1-step-down", "2-step-down"],
-                   choices=[r.name for r in RULES],
-                   help="Which rules to evaluate.")
+                   choices=[r.name for r in RULES], help="Which rules to evaluate.")
     p.add_argument("--num-trials", type=int, default=100, help="Number of word assignments to evaluate.")
     p.add_argument("--base-seed", type=int, default=0)
     p.add_argument("--show-examples", type=int, default=5)
@@ -276,7 +289,7 @@ def main() -> None:
     for rule in active_rules:
         num_examples = get_num_examples(rule, grid_rows, grid_cols)
         print(f"\n--- Rule: {rule.name} | Examples: {num_examples} ---")
-        for s in trange(args.base_seed, args.base_seed + args.num_trials, desc=f"{rule.name}"):
+        for s in trange(args.base_seed, args.base_seed + args.num_trials, desc=rule.name):
             trial_results = evaluate_awm_trial(
                 model, processor,
                 seed=s,
@@ -297,7 +310,7 @@ def main() -> None:
     print(f"Model: {args.model_id}")
     print(f"Grid size: {grid_rows}x{grid_cols}")
     print(f"Walk length: {args.walk_len}")
-    print(f"Number of trials: {args.num_trials}")
+    print(f"Number of trials: {n}")
     print(f"Base seed: {args.base_seed}")
     print(f"Rules: {[r.name for r in active_rules]}")
     print(f"Conditions: {conditions}")
@@ -306,15 +319,15 @@ def main() -> None:
     summary_rows = []
     for rule in active_rules:
         for cond in conditions:
-            rule_cond = [r for r in all_results if r.rule == rule.name and r.condition == cond]
-            if not rule_cond:
+            subset = [r for r in all_results if r.rule == rule.name and r.condition == cond]
+            if not subset:
                 continue
-            acc = sum(r.result.ok for r in rule_cond) / len(rule_cond)
-            parse_rate = sum(r.result.guess is not None for r in rule_cond) / len(rule_cond)
+            acc = sum(r.result.ok for r in subset) / len(subset)
+            parse_rate = sum(r.result.guess is not None for r in subset) / len(subset)
             summary_rows.append({
                 "rule": rule.name,
                 "condition": cond,
-                "n": len(rule_cond),
+                "n": len(subset),
                 "accuracy": f"{acc:7.2%}",
                 "parse rate": f"{parse_rate:7.2%}",
             })
@@ -324,7 +337,7 @@ def main() -> None:
     print("\n=== Example trials ===")
     for rule in active_rules:
         for cond in conditions:
-            rule_cond = [r for r in all_results if r.rule == rule.name and r.condition == cond]
+            subset = [r for r in all_results if r.rule == rule.name and r.condition == cond]
             print(f"\n-- {rule.name} / {cond} --")
             ex_rows = [
                 {
@@ -335,7 +348,7 @@ def main() -> None:
                     "ok": "✓" if r.result.ok else "✗",
                     "raw": r.result.raw.replace("\n", "\\n")[:60],
                 }
-                for r in rule_cond[:args.show_examples]
+                for r in subset[:args.show_examples]
             ]
             if ex_rows:
                 print_table(ex_rows)
