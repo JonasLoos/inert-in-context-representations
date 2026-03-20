@@ -102,25 +102,25 @@ def build_awm_messages(
     examples: List[Tuple[str, str]],
     query_input: str,
 ) -> Tuple[List[Message], None]:
-    """Multi-turn AWM prompt.
+    """Instruction-format AWM prompt.
 
-    The walk is placed in a completed assistant turn so the model treats it as its own
-    output (mirroring experiment1's multi-turn conditions). The examples and query are
-    then posed in the next user turn, requiring the model to deploy the topology it
-    "generated" to answer correctly.
+    The walk, examples, and query all appear in a single user message. The model must
+    infer the topology from the walk and apply the rule to the query. We use instruction
+    format because Gemma refuses to generate after a multi-section prefill, and the
+    paper's footnote (§4) confirms instruction format yields the same (poor) performance.
     """
     messages: List[Message] = [
-        {"role": "user", "content": "Generate a sequence of words that follow a pattern. Start with [SEQUENCE]."},
-        {"role": "assistant", "content": f"[SEQUENCE] {' '.join(walk)}"},
         {"role": "user", "content": (
-            "You are given examples of a mapping rule applied to the sequence above. "
-            "Predict the output word for the query by inferring the rule from the examples. "
+            "You are given a sequence of words that encodes a hidden spatial structure, "
+            "followed by examples of a mapping rule. "
+            "Predict the output word for the query by inferring the structure from the sequence. "
             "Generate the token [ANSWER], then generate the output word.\n\n"
+            f"[SEQUENCE] {' '.join(walk)}\n\n"
             f"[EXAMPLES]\n{_examples_text(examples)}\n\n"
             f"[QUERY]\nInput: {query_input}"
         )},
     ]
-    return messages, None  # no prefill
+    return messages, None
 
 
 def build_explicit_messages(

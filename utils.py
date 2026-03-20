@@ -21,7 +21,8 @@ WORDS = [
     "oak", "nut",
 ]
 
-ANSWER_TAG_RE = re.compile(r"\[ANSWER\]\s*(?P<word>[A-Za-z]+)")
+# Matches [ANSWER] word, ANSWER word, ANSWER: word, ANSWER\nword, etc.
+ANSWER_TAG_RE = re.compile(r"\[?ANSWER\]?\s*:?\s*\n*(?P<word>[A-Za-z]+)", re.IGNORECASE)
 FIRST_WORD_RE = re.compile(r"(?P<word>[A-Za-z]+)")
 
 # A message is {"role": "user"|"assistant"|"system", "content": str}.
