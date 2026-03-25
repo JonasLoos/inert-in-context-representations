@@ -20,7 +20,7 @@ import json
 
 from tqdm import trange
 
-from utils import (
+from old_utils import (
     WORDS, Message, neighbors, parse_answer, run_generation,
     print_table, load_model, validate_words,
 )
