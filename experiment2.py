@@ -153,30 +153,33 @@ CONDITIONS: List[AWMCondition] = [
                 {"role": "user", "content": "Generate a sequence of words that follow a pattern. Start with [SEQUENCE]."},
                 {"role": "assistant", "content": f"[SEQUENCE] {' '.join(walk)}"},
                 {"role": "user", "content": (
-                    "Given examples of a mapping rule applied to words in the sequence above, "
-                    "predict the output word for the query. "
-                    "Generate [ANSWER] then the output word.\n\n"
-                    f"[EXAMPLES]\n{_examples_text(ex)}\n\n"
-                    f"[QUERY]\nInput: {q}"
+                    "Here are examples of a mapping rule:\n" +
+                    "\n".join(f"- {inp} maps to {out}" for inp, out in ex) +
+                    f"\n\nUsing the pattern from the sequence above, "
+                    f"what does '{q}' map to? "
+                    "Generate [ANSWER] then the output word."
                 )},
             ],
             None,
         ),
     ),
-    # Walk as assistant prefill, examples+query in the user message
-    # (analogous to experiment1's partial-prefill condition).
-    # The model sees the task first, then generates the walk in its own response space,
-    # then must predict the answer — testing whether prefill-space representations help.
+    # Walk in a completed assistant turn, AWM question as a follow-up user turn with a
+    # prefilled [ANSWER] prompt (analogous to experiment1's partial-prefill condition).
+    # Unlike awm-multi-turn, the final user turn asks a direct question without structured
+    # headers, and the model response is primed with [ANSWER] to avoid sequence continuation.
     AWMCondition(
         name="awm-seq-prefill",
         build=lambda walk, ex, q, p2w, rows, cols: (
-            [{"role": "user", "content": (
-                "You will be shown a sequence of words encoding a hidden structure. "
-                "After the sequence, generate [ANSWER] followed by the output word for the query.\n\n"
-                f"[EXAMPLES]\n{_examples_text(ex)}\n\n"
-                f"[QUERY]\nInput: {q}"
-            )}],
-            f"[SEQUENCE] {' '.join(walk)}\n[ANSWER]",
+            [
+                {"role": "user", "content": "Generate a sequence of words that follow a pattern. Start with [SEQUENCE]."},
+                {"role": "assistant", "content": f"[SEQUENCE] {' '.join(walk)}"},
+                {"role": "user", "content": (
+                    "Here are examples of a mapping rule:\n" +
+                    "\n".join(f"- {inp} maps to {out}" for inp, out in ex) +
+                    f"\n\nUsing the pattern from the sequence above, what does '{q}' map to?"
+                )},
+            ],
+            "[ANSWER]",
         ),
         max_new_tokens=4,
     ),
