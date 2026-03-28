@@ -231,6 +231,11 @@ def transpose(grid: Grid) -> Grid:
     return [list(row) for row in zip(*grid)]
 
 
+def flip_anti_diagonal(grid: Grid) -> Grid:
+    n = len(grid)
+    return [[grid[n - 1 - j][n - 1 - i] for j in range(n)] for i in range(n)]
+
+
 def rotate90(grid: Grid) -> Grid:
     return [list(row) for row in zip(*grid[::-1])]
 
@@ -263,7 +268,7 @@ def symmetry_variants(grid: Grid) -> List[Grid]:
             rotate90(grid),
             rotate270(grid),
             transpose(grid),
-            flip_horizontal(transpose(grid)),
+            flip_anti_diagonal(grid),
         ])
 
     unique: List[Grid] = []
